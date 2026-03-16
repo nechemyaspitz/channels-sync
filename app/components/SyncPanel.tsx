@@ -61,7 +61,7 @@ export function SyncPanel({ password }: { password: string }) {
     setTotals(null);
     setError("");
 
-    let offset = 0;
+    let page = 1;
     let totalCreated = 0;
     let totalUpdated = 0;
     let totalSkipped = 0;
@@ -72,7 +72,7 @@ export function SyncPanel({ password }: { password: string }) {
       while (true) {
         setStatusMsg(
           totalVideos > 0
-            ? `Syncing batch... (${Math.min(offset, totalVideos)}/${totalVideos})`
+            ? `Syncing batch... (${Math.min((page - 1) * 10, totalVideos)}/${totalVideos})`
             : "Starting sync..."
         );
 
@@ -82,7 +82,7 @@ export function SyncPanel({ password }: { password: string }) {
             Authorization: `Bearer ${password}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ showcaseId, offset }),
+          body: JSON.stringify({ showcaseId, page }),
         });
 
         if (!res.ok) {
@@ -113,7 +113,7 @@ export function SyncPanel({ password }: { password: string }) {
           break;
         }
 
-        offset = data.nextOffset;
+        page = data.nextPage;
       }
     } catch (err) {
       setError(`Network error: ${err}`);

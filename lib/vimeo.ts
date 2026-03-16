@@ -75,6 +75,20 @@ export async function fetchShowcaseVideos(
 }
 
 /**
+ * Fetch a page of videos from a showcase using Vimeo's pagination.
+ */
+export async function fetchShowcaseVideosPage(
+  showcaseId: string,
+  page: number,
+  perPage: number
+): Promise<{ videos: VimeoVideo[]; total: number }> {
+  const data: VimeoPaginatedResponse<VimeoVideo> = await vimeoFetch(
+    `/users/${getUserId()}/albums/${showcaseId}/videos?per_page=${perPage}&page=${page}`
+  );
+  return { videos: data.data, total: data.total };
+}
+
+/**
  * Fetch a single video by ID.
  */
 export async function fetchVideo(videoId: string): Promise<VimeoVideo> {

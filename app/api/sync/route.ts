@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { verifyAdmin } from "@/lib/auth";
 import { getMapping } from "@/lib/mapping";
 import {
-  fetchShowcaseVideos,
+  fetchShowcaseVideosPage,
   extractVideoId,
   getBestThumbnail,
   formatDuration,
@@ -13,11 +13,11 @@ import {
   updateVideoItem,
   generateSlug,
 } from "@/lib/webflow";
-import { VimeoVideo, WebflowVideoFields } from "@/lib/types";
+import { VimeoVideo, WebflowVideoFields, WebflowItem } from "@/lib/types";
 
 export const maxDuration = 60;
 
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 10;
 
 function videoToFields(
   video: VimeoVideo,
@@ -35,6 +35,21 @@ function videoToFields(
   };
 }
 
+// Cache Webflow items across batches within a single deployment instance
+let webflowItemsCache: Map<string, WebflowItem> | null = null;
+let webflowCacheTime = 0;
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getWebflowItems(): Promise<Map<string, WebflowItem>> {
+  const now = Date.now();
+  if (webflowItemsCache && now - webflowCacheTime < CACHE_TTL) {
+    return webflowItemsCache;
+  }
+  webflowItemsCache = await fetchAllVideoItems();
+  webflowCacheTime = now;
+  return webflowItemsCache;
+}
+
 export async function POST(request: Request) {
   if (!verifyAdmin(request)) {
     return new Response("Unauthorized", { status: 401 });
@@ -42,7 +57,7 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => ({}));
   const showcaseId = body.showcaseId as string | undefined;
-  const offset = (body.offset as number) || 0;
+  const page = (body.page as number) || 1;
 
   if (!showcaseId) {
     return NextResponse.json(
@@ -62,17 +77,28 @@ export async function POST(request: Request) {
   }
 
   try {
-    const existingItems = await fetchAllVideoItems();
-    const allVideos = await fetchShowcaseVideos(showcaseId);
-    const batch = allVideos.slice(offset, offset + BATCH_SIZE);
+    // Fetch only the page of videos we need from Vimeo
+    const { videos, total } = await fetchShowcaseVideosPage(
+      showcaseId,
+      page,
+      BATCH_SIZE
+    );
+
+    // Fetch existing Webflow items (cached across batches)
+    const existingItems = await getWebflowItems();
 
     let created = 0;
     let updated = 0;
     let skipped = 0;
     let errors = 0;
-    const log: Array<{ action: string; vimeoId: string; videoName: string; details: string }> = [];
+    const log: Array<{
+      action: string;
+      vimeoId: string;
+      videoName: string;
+      details: string;
+    }> = [];
 
-    for (const video of batch) {
+    for (const video of videos) {
       const vimeoId = extractVideoId(video.uri);
       const fields = videoToFields(video, config.webflowCategoryId);
 
@@ -90,15 +116,30 @@ export async function POST(request: Request) {
           if (changed) {
             await updateVideoItem(existing.id, fields);
             updated++;
-            log.push({ action: "update", vimeoId, videoName: video.name, details: "Updated" });
+            log.push({
+              action: "update",
+              vimeoId,
+              videoName: video.name,
+              details: "Updated",
+            });
           } else {
             skipped++;
-            log.push({ action: "skip", vimeoId, videoName: video.name, details: "No changes" });
+            log.push({
+              action: "skip",
+              vimeoId,
+              videoName: video.name,
+              details: "No changes",
+            });
           }
         } else {
           await createVideoItem(fields);
           created++;
-          log.push({ action: "create", vimeoId, videoName: video.name, details: "Created" });
+          log.push({
+            action: "create",
+            vimeoId,
+            videoName: video.name,
+            details: "Created",
+          });
         }
       } catch (err) {
         errors++;
@@ -111,8 +152,13 @@ export async function POST(request: Request) {
       }
     }
 
-    const nextOffset = offset + BATCH_SIZE;
-    const hasMore = nextOffset < allVideos.length;
+    const processed = Math.min(page * BATCH_SIZE, total);
+    const hasMore = processed < total;
+
+    // Invalidate cache when done so next sync gets fresh data
+    if (!hasMore) {
+      webflowItemsCache = null;
+    }
 
     return NextResponse.json({
       created,
@@ -120,10 +166,10 @@ export async function POST(request: Request) {
       skipped,
       errors,
       log,
-      total: allVideos.length,
-      processed: Math.min(nextOffset, allVideos.length),
+      total,
+      processed,
       hasMore,
-      nextOffset: hasMore ? nextOffset : null,
+      nextPage: hasMore ? page + 1 : null,
     });
   } catch (err) {
     return NextResponse.json(
