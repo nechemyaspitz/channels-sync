@@ -95,24 +95,26 @@ export async function findItemByVimeoId(
 }
 
 /**
- * Create a new video item in the collection (staged/draft).
+ * Create a new video item in the collection.
  */
 export async function createVideoItem(
   fields: WebflowVideoFields
 ): Promise<WebflowItem> {
   const collectionId = getVideosCollectionId();
-  const { data } = await webflowFetch<WebflowItem>(
-    `/collections/${collectionId}/items`,
+  const { data } = await webflowFetch<{ items: WebflowItem[] }>(
+    `/collections/${collectionId}/items/live`,
     {
       method: "POST",
-      body: JSON.stringify({ fieldData: fields, isDraft: false }),
+      body: JSON.stringify({
+        items: [{ fieldData: fields, isDraft: false }],
+      }),
     }
   );
-  return data;
+  return data.items[0];
 }
 
 /**
- * Update an existing video item (staged).
+ * Update an existing video item (live).
  */
 export async function updateVideoItem(
   itemId: string,
@@ -120,7 +122,7 @@ export async function updateVideoItem(
 ): Promise<WebflowItem> {
   const collectionId = getVideosCollectionId();
   const { data } = await webflowFetch<WebflowItem>(
-    `/collections/${collectionId}/items/${itemId}`,
+    `/collections/${collectionId}/items/${itemId}/live`,
     {
       method: "PATCH",
       body: JSON.stringify({ fieldData: fields }),
@@ -194,12 +196,16 @@ export async function fetchAllCategories(): Promise<WebflowCollectionItem[]> {
 
 /**
  * Generate a URL-safe slug from a name and vimeo ID.
+ * Handles non-Latin characters (Hebrew/Yiddish) by falling back to just the vimeo ID.
  */
 export function generateSlug(name: string, vimeoId: string): string {
   const base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 90);
-  return `${base}-${vimeoId}`;
+    .replace(/^-+|-+$/g, "");
+  // If the name is entirely non-Latin (e.g. Hebrew), base will be empty
+  if (base) {
+    return `${base.slice(0, 90)}-${vimeoId}`;
+  }
+  return `video-${vimeoId}`;
 }

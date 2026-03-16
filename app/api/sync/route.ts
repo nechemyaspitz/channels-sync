@@ -10,7 +10,6 @@ import {
   fetchAllVideoItems,
   createVideoItem,
   updateVideoItem,
-  publishItems,
   generateSlug,
 } from "@/lib/webflow";
 import { VimeoVideo, WebflowVideoFields } from "@/lib/types";
@@ -80,8 +79,6 @@ export async function POST(request: Request) {
         const videos = await fetchShowcaseVideos(showcaseId);
         send({ type: "status", message: `Found ${videos.length} videos. Syncing...` });
 
-        const itemsToPublish: string[] = [];
-
         for (const video of videos) {
           const vimeoId = extractVideoId(video.uri);
           const fields = videoToFields(video, config.webflowCategoryId);
@@ -98,8 +95,7 @@ export async function POST(request: Request) {
                 ef.video !== fields.video;
 
               if (changed) {
-                const result = await updateVideoItem(existing.id, fields);
-                itemsToPublish.push(result.id);
+                await updateVideoItem(existing.id, fields);
                 updated++;
                 send({ type: "log", action: "update", vimeoId, videoName: video.name, details: "Updated" });
               } else {
@@ -107,8 +103,7 @@ export async function POST(request: Request) {
                 send({ type: "log", action: "skip", vimeoId, videoName: video.name, details: "No changes" });
               }
             } else {
-              const result = await createVideoItem(fields);
-              itemsToPublish.push(result.id);
+              await createVideoItem(fields);
               created++;
               send({ type: "log", action: "create", vimeoId, videoName: video.name, details: "Created" });
             }
@@ -121,16 +116,6 @@ export async function POST(request: Request) {
               videoName: video.name,
               details: err instanceof Error ? err.message : String(err),
             });
-          }
-        }
-
-        if (itemsToPublish.length > 0) {
-          send({ type: "status", message: `Publishing ${itemsToPublish.length} items...` });
-          try {
-            await publishItems(itemsToPublish);
-            send({ type: "log", action: "publish", vimeoId: "", videoName: "", details: `Published ${itemsToPublish.length} items` });
-          } catch (err) {
-            send({ type: "log", action: "error", vimeoId: "", videoName: "", details: `Publish failed: ${err instanceof Error ? err.message : String(err)}` });
           }
         }
 
