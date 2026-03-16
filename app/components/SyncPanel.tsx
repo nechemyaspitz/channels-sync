@@ -1,23 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 
-interface SyncLogEntry {
-  timestamp: string;
+interface MappingEntry {
+  webflowCategoryId: string;
+  showcaseName: string;
+  categoryName: string;
+}
+
+type Mapping = Record<string, MappingEntry>;
+
+interface LogEntry {
   action: string;
   vimeoId: string;
   videoName: string;
   details: string;
 }
 
-interface SyncResult {
-  success: boolean;
-  totalProcessed: number;
+interface SyncTotals {
+  total: number;
   created: number;
   updated: number;
   skipped: number;
   errors: number;
-  log: SyncLogEntry[];
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -30,14 +35,32 @@ const ACTION_COLORS: Record<string, string> = {
 };
 
 export function SyncPanel({ password }: { password: string }) {
-  const [syncing, setSyncing] = useState(false);
-  const [result, setResult] = useState<SyncResult | null>(null);
+  const [mapping, setMapping] = useState<Mapping>({});
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [totals, setTotals] = useState<SyncTotals | null>(null);
   const [error, setError] = useState("");
 
-  const runSync = async (showcaseId?: string) => {
-    setSyncing(true);
-    setResult(null);
+  const loadMapping = useCallback(async () => {
+    try {
+      const res = await fetch("/api/mapping", {
+        headers: { Authorization: `Bearer ${password}` },
+      });
+      if (res.ok) setMapping(await res.json());
+    } catch {}
+  }, [password]);
+
+  useEffect(() => {
+    loadMapping();
+  }, [loadMapping]);
+
+  const syncShowcase = async (showcaseId: string) => {
+    setSyncing(showcaseId);
+    setLogEntries([]);
+    setTotals(null);
     setError("");
+    setStatusMsg("Starting...");
 
     try {
       const res = await fetch("/api/sync", {
@@ -46,40 +69,133 @@ export function SyncPanel({ password }: { password: string }) {
           Authorization: `Bearer ${password}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(showcaseId ? { showcaseId } : {}),
+        body: JSON.stringify({ showcaseId }),
       });
 
-      if (res.ok) {
-        setResult(await res.json());
-      } else {
+      if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || `Sync failed with status ${res.status}`);
+        setError(data.error || `Failed with status ${res.status}`);
+        setSyncing(null);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      if (!reader) {
+        setError("No response stream");
+        setSyncing(null);
+        return;
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const dataMatch = line.match(/^data: (.+)/);
+          if (!dataMatch) continue;
+
+          try {
+            const data = JSON.parse(dataMatch[1]);
+
+            if (data.type === "status") {
+              setStatusMsg(data.message);
+            } else if (data.type === "log") {
+              setLogEntries((prev) => [
+                ...prev,
+                {
+                  action: data.action,
+                  vimeoId: data.vimeoId,
+                  videoName: data.videoName,
+                  details: data.details,
+                },
+              ]);
+            } else if (data.type === "done") {
+              setTotals({
+                total: data.total,
+                created: data.created,
+                updated: data.updated,
+                skipped: data.skipped,
+                errors: data.errors,
+              });
+              setStatusMsg("");
+            } else if (data.type === "error") {
+              setError(data.message);
+            }
+          } catch {}
+        }
       }
     } catch (err) {
       setError(`Network error: ${err}`);
     }
 
-    setSyncing(false);
+    setSyncing(null);
   };
+
+  const syncAll = async () => {
+    const ids = Object.keys(mapping);
+    for (const id of ids) {
+      await syncShowcase(id);
+    }
+  };
+
+  const showcaseIds = Object.keys(mapping);
+
+  if (showcaseIds.length === 0) {
+    return (
+      <section className="bg-gray-900 rounded-lg p-6">
+        <h2 className="text-lg font-semibold">Bulk Sync</h2>
+        <p className="text-gray-500 text-sm mt-2">
+          No showcase mappings found. Set the SHOWCASE_MAPPING env var first.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="bg-gray-900 rounded-lg p-6 space-y-4">
       <h2 className="text-lg font-semibold">Bulk Sync</h2>
 
-      <div className="flex items-center gap-4">
-        <button
-          onClick={() => runSync()}
-          disabled={syncing}
-          className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded font-medium text-sm transition-colors"
-        >
-          {syncing ? "Syncing..." : "Sync All Showcases"}
-        </button>
-        {syncing && (
-          <span className="text-gray-400 text-sm">
-            This may take a while...
-          </span>
-        )}
+      <div className="space-y-2">
+        {showcaseIds.map((id) => (
+          <div
+            key={id}
+            className="flex items-center justify-between bg-gray-800 p-3 rounded"
+          >
+            <div>
+              <span className="font-medium">{mapping[id].showcaseName}</span>
+              <span className="text-gray-500 text-sm ml-2">
+                → {mapping[id].categoryName}
+              </span>
+            </div>
+            <button
+              onClick={() => syncShowcase(id)}
+              disabled={syncing !== null}
+              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded text-sm font-medium transition-colors"
+            >
+              {syncing === id ? "Syncing..." : "Sync"}
+            </button>
+          </div>
+        ))}
       </div>
+
+      <button
+        onClick={syncAll}
+        disabled={syncing !== null}
+        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded font-medium text-sm transition-colors"
+      >
+        {syncing ? "Syncing..." : "Sync All"}
+      </button>
+
+      {statusMsg && (
+        <p className="text-gray-400 text-sm">{statusMsg}</p>
+      )}
 
       {error && (
         <div className="bg-red-900/30 border border-red-800 rounded p-3 text-red-300 text-sm">
@@ -87,67 +203,57 @@ export function SyncPanel({ password }: { password: string }) {
         </div>
       )}
 
-      {result && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-5 gap-4 text-center">
-            <div className="bg-gray-800 rounded p-3">
-              <div className="text-2xl font-bold">{result.totalProcessed}</div>
-              <div className="text-gray-500 text-xs">Total</div>
-            </div>
-            <div className="bg-gray-800 rounded p-3">
-              <div className="text-2xl font-bold text-green-400">
-                {result.created}
-              </div>
-              <div className="text-gray-500 text-xs">Created</div>
-            </div>
-            <div className="bg-gray-800 rounded p-3">
-              <div className="text-2xl font-bold text-blue-400">
-                {result.updated}
-              </div>
-              <div className="text-gray-500 text-xs">Updated</div>
-            </div>
-            <div className="bg-gray-800 rounded p-3">
-              <div className="text-2xl font-bold text-gray-400">
-                {result.skipped}
-              </div>
-              <div className="text-gray-500 text-xs">Skipped</div>
-            </div>
-            <div className="bg-gray-800 rounded p-3">
-              <div className="text-2xl font-bold text-red-400">
-                {result.errors}
-              </div>
-              <div className="text-gray-500 text-xs">Errors</div>
-            </div>
+      {totals && (
+        <div className="grid grid-cols-5 gap-4 text-center">
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-2xl font-bold">{totals.total}</div>
+            <div className="text-gray-500 text-xs">Total</div>
           </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-2xl font-bold text-green-400">{totals.created}</div>
+            <div className="text-gray-500 text-xs">Created</div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-2xl font-bold text-blue-400">{totals.updated}</div>
+            <div className="text-gray-500 text-xs">Updated</div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-2xl font-bold text-gray-400">{totals.skipped}</div>
+            <div className="text-gray-500 text-xs">Skipped</div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-2xl font-bold text-red-400">{totals.errors}</div>
+            <div className="text-gray-500 text-xs">Errors</div>
+          </div>
+        </div>
+      )}
 
-          {result.log.length > 0 && (
-            <div className="bg-gray-800 rounded overflow-hidden">
-              <div className="px-4 py-2 bg-gray-700/50 text-sm font-medium">
-                Sync Log
+      {logEntries.length > 0 && (
+        <div className="bg-gray-800 rounded overflow-hidden">
+          <div className="px-4 py-2 bg-gray-700/50 text-sm font-medium">
+            Sync Log
+          </div>
+          <div className="max-h-96 overflow-y-auto">
+            {logEntries.map((entry, i) => (
+              <div
+                key={i}
+                className="px-4 py-2 border-t border-gray-700/50 text-sm flex items-start gap-3"
+              >
+                <span
+                  className={`font-mono uppercase text-xs w-16 shrink-0 pt-0.5 ${ACTION_COLORS[entry.action] || "text-gray-400"}`}
+                >
+                  {entry.action}
+                </span>
+                <span className="flex-1">
+                  {entry.videoName && (
+                    <span className="font-medium">{entry.videoName}</span>
+                  )}
+                  {entry.videoName && " — "}
+                  <span className="text-gray-400">{entry.details}</span>
+                </span>
               </div>
-              <div className="max-h-96 overflow-y-auto">
-                {result.log.map((entry, i) => (
-                  <div
-                    key={i}
-                    className="px-4 py-2 border-t border-gray-700/50 text-sm flex items-start gap-3"
-                  >
-                    <span
-                      className={`font-mono uppercase text-xs w-16 shrink-0 pt-0.5 ${ACTION_COLORS[entry.action] || "text-gray-400"}`}
-                    >
-                      {entry.action}
-                    </span>
-                    <span className="flex-1">
-                      {entry.videoName && (
-                        <span className="font-medium">{entry.videoName}</span>
-                      )}
-                      {entry.videoName && " — "}
-                      <span className="text-gray-400">{entry.details}</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       )}
     </section>
