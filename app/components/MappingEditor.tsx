@@ -31,7 +31,7 @@ export function MappingEditor({ password }: { password: string }) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [mapping, setMapping] = useState<Mapping>({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [status, setStatus] = useState("");
 
   const loadData = useCallback(async () => {
@@ -81,27 +81,12 @@ export function MappingEditor({ password }: { password: string }) {
     });
   };
 
-  const saveMapping = async () => {
-    setSaving(true);
-    setStatus("");
-    try {
-      const res = await fetch("/api/mapping", {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${password}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(mapping),
-      });
-      if (res.ok) {
-        setStatus("Mapping saved");
-      } else {
-        setStatus("Failed to save mapping");
-      }
-    } catch (err) {
-      setStatus(`Error: ${err}`);
-    }
-    setSaving(false);
+  const mappingJson = JSON.stringify(mapping);
+
+  const copyToClipboard = async () => {
+    await navigator.clipboard.writeText(mappingJson);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   if (loading) {
@@ -111,6 +96,8 @@ export function MappingEditor({ password }: { password: string }) {
       </section>
     );
   }
+
+  const hasMappings = Object.keys(mapping).length > 0;
 
   return (
     <section className="bg-gray-900 rounded-lg p-6 space-y-4">
@@ -162,18 +149,30 @@ export function MappingEditor({ password }: { password: string }) {
         </p>
       )}
 
-      <div className="flex items-center gap-4">
-        <button
-          onClick={saveMapping}
-          disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded font-medium text-sm transition-colors"
-        >
-          {saving ? "Saving..." : "Save Mapping"}
-        </button>
-        {status && (
-          <span className="text-sm text-gray-400">{status}</span>
-        )}
-      </div>
+      {hasMappings && (
+        <div className="space-y-3 pt-2">
+          <div>
+            <label className="text-sm text-gray-400 block mb-1">
+              Copy this JSON and set it as <code className="bg-gray-800 px-1.5 py-0.5 rounded text-xs">SHOWCASE_MAPPING</code> in your Vercel environment variables, then redeploy.
+            </label>
+            <div className="relative">
+              <pre className="bg-gray-800 border border-gray-700 rounded p-3 text-xs text-gray-300 overflow-x-auto">
+                {JSON.stringify(mapping, null, 2)}
+              </pre>
+              <button
+                onClick={copyToClipboard}
+                className="absolute top-2 right-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
+              >
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {status && (
+        <span className="text-sm text-gray-400">{status}</span>
+      )}
     </section>
   );
 }
