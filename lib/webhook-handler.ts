@@ -4,7 +4,6 @@ import {
   fetchVideo,
   getBestThumbnail,
   formatDuration,
-  getEmbedUrl,
   findVideoShowcases,
 } from "./vimeo";
 import {
@@ -31,7 +30,6 @@ export async function handleWebhookEvent(
 ): Promise<WebhookResult> {
   const log: SyncLogEntry[] = [];
 
-  // Extract video ID from the resource URI
   const videoIdMatch = resourceUri.match(/\/videos\/(\d+)/);
   if (!videoIdMatch) {
     return {
@@ -59,7 +57,7 @@ export async function handleWebhookEvent(
     }
 
     case "video.update": {
-      return handleVideoUpdate(vimeoId, mapping, log);
+      return handleVideoAddOrUpdate(vimeoId, mapping, log);
     }
 
     case "video.delete": {
@@ -67,7 +65,7 @@ export async function handleWebhookEvent(
     }
 
     case "video.removed_from_showcase": {
-      return handleVideoRemovedFromShowcase(vimeoId, resourceUri, mapping, log);
+      return handleVideoRemovedFromShowcase(vimeoId, mapping, log);
     }
 
     default: {
@@ -91,7 +89,6 @@ async function handleVideoAddOrUpdate(
   try {
     const video = await fetchVideo(vimeoId);
 
-    // Find which mapped showcases this video belongs to
     const showcaseIds = await findVideoShowcases(vimeoId);
     const mappedShowcase = showcaseIds.find((id) => mapping[id]);
 
@@ -107,50 +104,32 @@ async function handleVideoAddOrUpdate(
     }
 
     const categoryId = mapping[mappedShowcase].webflowCategoryId;
+    const fields = {
+      name: video.name,
+      slug: generateSlug(video.name, vimeoId),
+      video: video.link,
+      description: video.description || "",
+      thumbnail: { url: getBestThumbnail(video), alt: video.name },
+      duration: formatDuration(video.duration),
+      category: categoryId,
+    };
+
     const existing = await findItemByVimeoId(vimeoId);
 
     if (existing) {
-      // Update existing item
-      const result = await updateVideoItem(existing.id, {
-        name: video.name,
-        slug: generateSlug(video.name, vimeoId),
-        "vimeo-video-id": vimeoId,
-        description: video.description || "",
-        "duration-seconds": video.duration,
-        "duration-display": formatDuration(video.duration),
-        "embed-url": getEmbedUrl(video),
-        thumbnail: { url: getBestThumbnail(video), alt: video.name },
-        "vimeo-url": video.link,
-        tags: video.tags?.map((t) => t.name).join(", ") || "",
-        category: categoryId,
-      });
+      const result = await updateVideoItem(existing.id, fields);
       await publishItems([result.id]);
-
       log.push({
         timestamp: new Date().toISOString(),
         action: "update",
         vimeoId,
         videoName: video.name,
-        details: `Updated and published`,
+        details: "Updated and published",
       });
       return { success: true, action: "update", log };
     } else {
-      // Create new item
-      const result = await createVideoItem({
-        name: video.name,
-        slug: generateSlug(video.name, vimeoId),
-        "vimeo-video-id": vimeoId,
-        description: video.description || "",
-        "duration-seconds": video.duration,
-        "duration-display": formatDuration(video.duration),
-        "embed-url": getEmbedUrl(video),
-        thumbnail: { url: getBestThumbnail(video), alt: video.name },
-        "vimeo-url": video.link,
-        tags: video.tags?.map((t) => t.name).join(", ") || "",
-        category: categoryId,
-      });
+      const result = await createVideoItem(fields);
       await publishItems([result.id]);
-
       log.push({
         timestamp: new Date().toISOString(),
         action: "create",
@@ -170,15 +149,6 @@ async function handleVideoAddOrUpdate(
     });
     return { success: false, action: "error", log };
   }
-}
-
-async function handleVideoUpdate(
-  vimeoId: string,
-  mapping: ReturnType<typeof getMapping>,
-  log: SyncLogEntry[]
-): Promise<WebhookResult> {
-  // Same as add — fetch fresh data and upsert
-  return handleVideoAddOrUpdate(vimeoId, mapping, log);
 }
 
 async function handleVideoDelete(
@@ -221,17 +191,14 @@ async function handleVideoDelete(
 
 async function handleVideoRemovedFromShowcase(
   vimeoId: string,
-  resourceUri: string,
   mapping: ReturnType<typeof getMapping>,
   log: SyncLogEntry[]
 ): Promise<WebhookResult> {
   try {
-    // Check if the video still belongs to any other mapped showcase
     const showcaseIds = await findVideoShowcases(vimeoId);
     const stillMapped = showcaseIds.find((id) => mapping[id]);
 
     if (stillMapped) {
-      // Video is still in another mapped showcase — update its category
       const video = await fetchVideo(vimeoId);
       const existing = await findItemByVimeoId(vimeoId);
       if (existing) {
@@ -249,7 +216,6 @@ async function handleVideoRemovedFromShowcase(
       }
       return { success: true, action: "update", log };
     } else {
-      // Video is no longer in any mapped showcase — delete from Webflow
       return handleVideoDelete(vimeoId, log);
     }
   } catch (err) {

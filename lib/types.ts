@@ -49,24 +49,19 @@ export interface VimeoWebhookPayload {
   user_id: number;
   video_id?: string;
   album_id?: string;
-  // The full resource URI
   resource_uri?: string;
-  // Timestamp of the event
   created_time?: string;
 }
 
+// Matches your actual Webflow "Videos" collection fields
 export interface WebflowVideoFields {
-  name: string;
-  slug: string;
-  "vimeo-video-id": string;
-  description?: string;
-  "duration-seconds"?: number;
-  "duration-display"?: string;
-  "embed-url"?: string;
-  thumbnail?: { url: string; alt?: string };
-  "vimeo-url"?: string;
-  tags?: string;
-  category?: string; // reference field — Webflow category item ID
+  name: string;            // Title (PlainText, required)
+  slug: string;            // Slug (PlainText, required)
+  video: string;           // Video link (Link, required) — Vimeo URL e.g. https://vimeo.com/123456
+  description?: string;    // Description (PlainText)
+  thumbnail?: { url: string; alt?: string }; // Thumbnail (Image, required)
+  duration?: string;       // Duration (PlainText) — formatted "M:SS" or "H:MM:SS"
+  category?: string;       // Category (Reference to Categories collection)
 }
 
 export interface WebflowItem {

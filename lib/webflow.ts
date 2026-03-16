@@ -44,8 +44,19 @@ async function webflowFetch<T>(
 }
 
 /**
+ * Extract the Vimeo video ID from a Vimeo URL.
+ * e.g. "https://vimeo.com/123456" → "123456"
+ */
+export function extractVimeoIdFromUrl(url: string): string | null {
+  if (!url) return null;
+  const match = url.match(/vimeo\.com\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+/**
  * Fetch all items from the videos collection.
- * Builds a map of vimeo-video-id → webflow item.
+ * Builds a map of vimeo video ID → webflow item.
+ * Extracts the Vimeo ID from the `video` link field URL.
  */
 export async function fetchAllVideoItems(): Promise<Map<string, WebflowItem>> {
   const map = new Map<string, WebflowItem>();
@@ -59,7 +70,8 @@ export async function fetchAllVideoItems(): Promise<Map<string, WebflowItem>> {
     );
 
     for (const item of data.items) {
-      const vimeoId = item.fieldData["vimeo-video-id"];
+      const videoUrl = item.fieldData.video;
+      const vimeoId = videoUrl ? extractVimeoIdFromUrl(String(videoUrl)) : null;
       if (vimeoId) {
         map.set(vimeoId, item);
       }

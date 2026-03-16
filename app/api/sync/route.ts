@@ -5,7 +5,6 @@ import {
   extractVideoId,
   getBestThumbnail,
   formatDuration,
-  getEmbedUrl,
 } from "@/lib/vimeo";
 import {
   fetchAllVideoItems,
@@ -26,14 +25,10 @@ function videoToFields(
   return {
     name: video.name,
     slug: generateSlug(video.name, vimeoId),
-    "vimeo-video-id": vimeoId,
+    video: video.link,                        // Vimeo URL → "video" Link field
     description: video.description || "",
-    "duration-seconds": video.duration,
-    "duration-display": formatDuration(video.duration),
-    "embed-url": getEmbedUrl(video),
     thumbnail: { url: getBestThumbnail(video), alt: video.name },
-    "vimeo-url": video.link,
-    tags: video.tags?.map((t) => t.name).join(", ") || "",
+    duration: formatDuration(video.duration),  // formatted "M:SS" → "duration" PlainText field
     category: categoryId,
   };
 }
@@ -63,7 +58,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Use streaming to avoid timeout
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -96,14 +90,12 @@ export async function POST(request: Request) {
             const existing = existingItems.get(vimeoId);
 
             if (existing) {
-              // Check if key fields differ
               const ef = existing.fieldData;
               const changed =
                 ef.name !== fields.name ||
                 ef.description !== fields.description ||
-                ef["duration-seconds"] !== fields["duration-seconds"] ||
-                ef["embed-url"] !== fields["embed-url"] ||
-                ef.tags !== fields.tags;
+                ef.duration !== fields.duration ||
+                ef.video !== fields.video;
 
               if (changed) {
                 const result = await updateVideoItem(existing.id, fields);
