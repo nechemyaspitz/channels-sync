@@ -60,76 +60,60 @@ export function SyncPanel({ password }: { password: string }) {
     setLogEntries([]);
     setTotals(null);
     setError("");
-    setStatusMsg("Starting...");
+
+    let offset = 0;
+    let totalCreated = 0;
+    let totalUpdated = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+    let totalVideos = 0;
 
     try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${password}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ showcaseId }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || `Failed with status ${res.status}`);
-        setSyncing(null);
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      if (!reader) {
-        setError("No response stream");
-        setSyncing(null);
-        return;
-      }
-
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        setStatusMsg(
+          totalVideos > 0
+            ? `Syncing batch... (${Math.min(offset, totalVideos)}/${totalVideos})`
+            : "Starting sync..."
+        );
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
+        const res = await fetch("/api/sync", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${password}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ showcaseId, offset }),
+        });
 
-        for (const line of lines) {
-          const dataMatch = line.match(/^data: (.+)/);
-          if (!dataMatch) continue;
-
-          try {
-            const data = JSON.parse(dataMatch[1]);
-
-            if (data.type === "status") {
-              setStatusMsg(data.message);
-            } else if (data.type === "log") {
-              setLogEntries((prev) => [
-                ...prev,
-                {
-                  action: data.action,
-                  vimeoId: data.vimeoId,
-                  videoName: data.videoName,
-                  details: data.details,
-                },
-              ]);
-            } else if (data.type === "done") {
-              setTotals({
-                total: data.total,
-                created: data.created,
-                updated: data.updated,
-                skipped: data.skipped,
-                errors: data.errors,
-              });
-              setStatusMsg("");
-            } else if (data.type === "error") {
-              setError(data.message);
-            }
-          } catch {}
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setError(data.error || `Failed with status ${res.status}`);
+          break;
         }
+
+        const data = await res.json();
+
+        totalCreated += data.created;
+        totalUpdated += data.updated;
+        totalSkipped += data.skipped;
+        totalErrors += data.errors;
+        totalVideos = data.total;
+
+        setLogEntries((prev) => [...prev, ...data.log]);
+        setTotals({
+          total: totalCreated + totalUpdated + totalSkipped + totalErrors,
+          created: totalCreated,
+          updated: totalUpdated,
+          skipped: totalSkipped,
+          errors: totalErrors,
+        });
+
+        if (!data.hasMore) {
+          setStatusMsg(`Done! ${data.processed}/${data.total} videos processed.`);
+          break;
+        }
+
+        offset = data.nextOffset;
       }
     } catch (err) {
       setError(`Network error: ${err}`);

@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import { verifyAdmin } from "@/lib/auth";
 import { getMapping } from "@/lib/mapping";
 import {
@@ -16,6 +17,8 @@ import { VimeoVideo, WebflowVideoFields } from "@/lib/types";
 
 export const maxDuration = 60;
 
+const BATCH_SIZE = 15;
+
 function videoToFields(
   video: VimeoVideo,
   categoryId: string
@@ -24,10 +27,10 @@ function videoToFields(
   return {
     name: video.name,
     slug: generateSlug(video.name, vimeoId),
-    video: video.link,                        // Vimeo URL → "video" Link field
+    video: video.link,
     description: video.description || "",
     thumbnail: { url: getBestThumbnail(video), alt: video.name },
-    duration: formatDuration(video.duration),  // formatted "M:SS" → "duration" PlainText field
+    duration: formatDuration(video.duration),
     category: categoryId,
   };
 }
@@ -39,11 +42,12 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => ({}));
   const showcaseId = body.showcaseId as string | undefined;
+  const offset = (body.offset as number) || 0;
 
   if (!showcaseId) {
-    return new Response(
-      JSON.stringify({ error: "showcaseId is required" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
+    return NextResponse.json(
+      { error: "showcaseId is required" },
+      { status: 400 }
     );
   }
 
@@ -51,88 +55,83 @@ export async function POST(request: Request) {
   const config = mapping[showcaseId];
 
   if (!config) {
-    return new Response(
-      JSON.stringify({ error: "Showcase not found in mapping" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
+    return NextResponse.json(
+      { error: "Showcase not found in mapping" },
+      { status: 400 }
     );
   }
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      function send(data: Record<string, unknown>) {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
-        );
-      }
+  try {
+    const existingItems = await fetchAllVideoItems();
+    const allVideos = await fetchShowcaseVideos(showcaseId);
+    const batch = allVideos.slice(offset, offset + BATCH_SIZE);
 
-      let created = 0;
-      let updated = 0;
-      let skipped = 0;
-      let errors = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let errors = 0;
+    const log: Array<{ action: string; vimeoId: string; videoName: string; details: string }> = [];
+
+    for (const video of batch) {
+      const vimeoId = extractVideoId(video.uri);
+      const fields = videoToFields(video, config.webflowCategoryId);
 
       try {
-        send({ type: "status", message: "Fetching existing Webflow items..." });
-        const existingItems = await fetchAllVideoItems();
+        const existing = existingItems.get(vimeoId);
 
-        send({ type: "status", message: `Fetching videos from showcase "${config.showcaseName}"...` });
-        const videos = await fetchShowcaseVideos(showcaseId);
-        send({ type: "status", message: `Found ${videos.length} videos. Syncing...` });
+        if (existing) {
+          const ef = existing.fieldData;
+          const changed =
+            ef.name !== fields.name ||
+            ef.description !== fields.description ||
+            ef.duration !== fields.duration ||
+            ef.video !== fields.video;
 
-        for (const video of videos) {
-          const vimeoId = extractVideoId(video.uri);
-          const fields = videoToFields(video, config.webflowCategoryId);
-
-          try {
-            const existing = existingItems.get(vimeoId);
-
-            if (existing) {
-              const ef = existing.fieldData;
-              const changed =
-                ef.name !== fields.name ||
-                ef.description !== fields.description ||
-                ef.duration !== fields.duration ||
-                ef.video !== fields.video;
-
-              if (changed) {
-                await updateVideoItem(existing.id, fields);
-                updated++;
-                send({ type: "log", action: "update", vimeoId, videoName: video.name, details: "Updated" });
-              } else {
-                skipped++;
-                send({ type: "log", action: "skip", vimeoId, videoName: video.name, details: "No changes" });
-              }
-            } else {
-              await createVideoItem(fields);
-              created++;
-              send({ type: "log", action: "create", vimeoId, videoName: video.name, details: "Created" });
-            }
-          } catch (err) {
-            errors++;
-            send({
-              type: "log",
-              action: "error",
-              vimeoId,
-              videoName: video.name,
-              details: err instanceof Error ? err.message : String(err),
-            });
+          if (changed) {
+            await updateVideoItem(existing.id, fields);
+            updated++;
+            log.push({ action: "update", vimeoId, videoName: video.name, details: "Updated" });
+          } else {
+            skipped++;
+            log.push({ action: "skip", vimeoId, videoName: video.name, details: "No changes" });
           }
+        } else {
+          await createVideoItem(fields);
+          created++;
+          log.push({ action: "create", vimeoId, videoName: video.name, details: "Created" });
         }
-
-        send({ type: "done", created, updated, skipped, errors, total: created + updated + skipped + errors });
       } catch (err) {
-        send({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        errors++;
+        log.push({
+          action: "error",
+          vimeoId,
+          videoName: video.name,
+          details: err instanceof Error ? err.message : String(err),
+        });
       }
+    }
 
-      controller.close();
-    },
-  });
+    const nextOffset = offset + BATCH_SIZE;
+    const hasMore = nextOffset < allVideos.length;
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+    return NextResponse.json({
+      created,
+      updated,
+      skipped,
+      errors,
+      log,
+      total: allVideos.length,
+      processed: Math.min(nextOffset, allVideos.length),
+      hasMore,
+      nextOffset: hasMore ? nextOffset : null,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        error: "Sync failed",
+        details: err instanceof Error ? err.message : String(err),
+      },
+      { status: 500 }
+    );
+  }
 }
