@@ -30,8 +30,11 @@ export async function handleWebhookEvent(
 ): Promise<WebhookResult> {
   const log: SyncLogEntry[] = [];
 
+  console.log(`[handler] Processing event: ${event}, URI: ${resourceUri}`);
+
   const videoIdMatch = resourceUri.match(/\/videos\/(\d+)/);
   if (!videoIdMatch) {
+    console.error(`[handler] Could not extract video ID from URI: ${resourceUri}`);
     return {
       success: false,
       action: "unknown",
@@ -49,6 +52,7 @@ export async function handleWebhookEvent(
 
   const vimeoId = videoIdMatch[1];
   const mapping = getMapping();
+  console.log(`[handler] Video ID: ${vimeoId}, mapped showcases: ${Object.keys(mapping).length}`);
 
   switch (event) {
     // App webhook types
@@ -93,12 +97,16 @@ async function handleVideoAddOrUpdate(
   log: SyncLogEntry[]
 ): Promise<WebhookResult> {
   try {
+    console.log(`[handler:add/update] Fetching video ${vimeoId} from Vimeo`);
     const video = await fetchVideo(vimeoId);
+    console.log(`[handler:add/update] Video: "${video.name}"`);
 
     const showcaseIds = await findVideoShowcases(vimeoId);
+    console.log(`[handler:add/update] Video in showcases: [${showcaseIds.join(", ")}]`);
     const mappedShowcase = showcaseIds.find((id) => mapping[id]);
 
     if (!mappedShowcase) {
+      console.log(`[handler:add/update] Video "${video.name}" not in any mapped showcase, skipping`);
       log.push({
         timestamp: new Date().toISOString(),
         action: "skip",
@@ -123,8 +131,10 @@ async function handleVideoAddOrUpdate(
     const existing = await findItemByVimeoId(vimeoId);
 
     if (existing) {
+      console.log(`[handler:add/update] Updating existing Webflow item ${existing.id} for "${video.name}"`);
       const result = await updateVideoItem(existing.id, fields);
       await publishItems([result.id]);
+      console.log(`[handler:add/update] Updated and published "${video.name}"`);
       log.push({
         timestamp: new Date().toISOString(),
         action: "update",
@@ -134,8 +144,10 @@ async function handleVideoAddOrUpdate(
       });
       return { success: true, action: "update", log };
     } else {
+      console.log(`[handler:add/update] Creating new Webflow item for "${video.name}" in category "${mapping[mappedShowcase].categoryName}"`);
       const result = await createVideoItem(fields);
       await publishItems([result.id]);
+      console.log(`[handler:add/update] Created and published "${video.name}"`);
       log.push({
         timestamp: new Date().toISOString(),
         action: "create",
@@ -146,6 +158,7 @@ async function handleVideoAddOrUpdate(
       return { success: true, action: "create", log };
     }
   } catch (err) {
+    console.error(`[handler:add/update] Error for video ${vimeoId}:`, err instanceof Error ? err.stack : String(err));
     log.push({
       timestamp: new Date().toISOString(),
       action: "error",
@@ -162,9 +175,12 @@ async function handleVideoDelete(
   log: SyncLogEntry[]
 ): Promise<WebhookResult> {
   try {
+    console.log(`[handler:delete] Looking up video ${vimeoId} in Webflow`);
     const existing = await findItemByVimeoId(vimeoId);
     if (existing) {
+      console.log(`[handler:delete] Deleting Webflow item ${existing.id} ("${existing.fieldData.name}")`);
       await deleteVideoItem(existing.id);
+      console.log(`[handler:delete] Deleted "${existing.fieldData.name}" from Webflow`);
       log.push({
         timestamp: new Date().toISOString(),
         action: "delete",
@@ -174,6 +190,7 @@ async function handleVideoDelete(
       });
       return { success: true, action: "delete", log };
     } else {
+      console.log(`[handler:delete] Video ${vimeoId} not found in Webflow, nothing to delete`);
       log.push({
         timestamp: new Date().toISOString(),
         action: "skip",
@@ -184,6 +201,7 @@ async function handleVideoDelete(
       return { success: true, action: "skip", log };
     }
   } catch (err) {
+    console.error(`[handler:delete] Error deleting video ${vimeoId}:`, err instanceof Error ? err.stack : String(err));
     log.push({
       timestamp: new Date().toISOString(),
       action: "error",
@@ -201,17 +219,21 @@ async function handleVideoRemovedFromShowcase(
   log: SyncLogEntry[]
 ): Promise<WebhookResult> {
   try {
+    console.log(`[handler:showcase-remove] Checking if video ${vimeoId} is still in a mapped showcase`);
     const showcaseIds = await findVideoShowcases(vimeoId);
+    console.log(`[handler:showcase-remove] Video still in showcases: [${showcaseIds.join(", ")}]`);
     const stillMapped = showcaseIds.find((id) => mapping[id]);
 
     if (stillMapped) {
       const video = await fetchVideo(vimeoId);
       const existing = await findItemByVimeoId(vimeoId);
       if (existing) {
+        console.log(`[handler:showcase-remove] Moving "${video.name}" to category "${mapping[stillMapped].categoryName}"`);
         const result = await updateVideoItem(existing.id, {
           category: mapping[stillMapped].webflowCategoryId,
         });
         await publishItems([result.id]);
+        console.log(`[handler:showcase-remove] Moved and published "${video.name}"`);
         log.push({
           timestamp: new Date().toISOString(),
           action: "update",
@@ -222,9 +244,11 @@ async function handleVideoRemovedFromShowcase(
       }
       return { success: true, action: "update", log };
     } else {
+      console.log(`[handler:showcase-remove] Video ${vimeoId} no longer in any mapped showcase, deleting`);
       return handleVideoDelete(vimeoId, log);
     }
   } catch (err) {
+    console.error(`[handler:showcase-remove] Error for video ${vimeoId}:`, err instanceof Error ? err.stack : String(err));
     log.push({
       timestamp: new Date().toISOString(),
       action: "error",
