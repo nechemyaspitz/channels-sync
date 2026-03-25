@@ -22,8 +22,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ challenge: payload.challenge });
     }
 
-    const event = payload.event as string;
-    const resourceUri = payload.resource_uri || payload.clip?.uri || "";
+    // App webhooks use webhook_type + video object;
+    // legacy webhooks use event + resource_uri
+    const event =
+      payload.webhook_type || payload.event || (payload.type as string);
+    const resourceUri =
+      payload.video?.uri ||
+      payload.resource_uri ||
+      payload.clip?.uri ||
+      "";
 
     if (!event) {
       return NextResponse.json(
@@ -32,6 +39,7 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log("Webhook received:", { event, resourceUri });
     const result = await handleWebhookEvent(event, resourceUri);
     return NextResponse.json(result);
   } catch (err) {

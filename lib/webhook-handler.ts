@@ -51,15 +51,21 @@ export async function handleWebhookEvent(
   const mapping = getMapping();
 
   switch (event) {
+    // App webhook types
+    case "video-created":
+    case "video-transcode-complete":
+    // Legacy event names
     case "video.upload":
     case "video.added_to_showcase": {
       return handleVideoAddOrUpdate(vimeoId, mapping, log);
     }
 
+    case "video-updated":
     case "video.update": {
       return handleVideoAddOrUpdate(vimeoId, mapping, log);
     }
 
+    case "video-deleted":
     case "video.delete": {
       return handleVideoDelete(vimeoId, log);
     }
