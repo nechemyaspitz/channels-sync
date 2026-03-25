@@ -15,7 +15,7 @@ import {
 } from "@/lib/webflow";
 import { VimeoVideo, WebflowVideoFields, WebflowItem } from "@/lib/types";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const BATCH_SIZE = 10;
 
@@ -180,4 +180,105 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * GET handler for Vercel Cron — syncs all mapped showcases.
+ */
+export async function GET(request: Request) {
+  // Verify the request is from Vercel Cron
+  const authHeader = request.headers.get("authorization");
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const startTime = Date.now();
+  console.log("[cron] Starting full sync");
+
+  const mapping = getMapping();
+  const showcaseIds = Object.keys(mapping);
+
+  if (showcaseIds.length === 0) {
+    console.log("[cron] No showcases configured, skipping");
+    return NextResponse.json({ message: "No showcases configured" });
+  }
+
+  console.log(`[cron] Syncing ${showcaseIds.length} showcase(s): [${showcaseIds.join(", ")}]`);
+
+  const existingItems = await fetchAllVideoItems();
+  console.log(`[cron] Fetched ${existingItems.size} existing Webflow items`);
+
+  const results: Record<
+    string,
+    { created: number; updated: number; skipped: number; errors: number }
+  > = {};
+
+  for (const showcaseId of showcaseIds) {
+    const config = mapping[showcaseId];
+    const stats = { created: 0, updated: 0, skipped: 0, errors: 0 };
+    let page = 1;
+    let hasMore = true;
+
+    console.log(`[cron] Syncing showcase ${showcaseId} ("${config.categoryName}")`);
+
+    while (hasMore) {
+      try {
+        const { videos, total } = await fetchShowcaseVideosPage(
+          showcaseId,
+          page,
+          BATCH_SIZE
+        );
+
+        for (const video of videos) {
+          const vimeoId = extractVideoId(video.uri);
+          const fields = videoToFields(video, config.webflowCategoryId);
+
+          try {
+            const existing = existingItems.get(vimeoId);
+
+            if (existing) {
+              const ef = existing.fieldData;
+              const changed =
+                ef.name !== fields.name ||
+                ef.description !== fields.description ||
+                ef.duration !== fields.duration ||
+                ef.video !== fields.video;
+
+              if (changed) {
+                await updateVideoItem(existing.id, fields);
+                stats.updated++;
+                console.log(`[cron] Updated "${video.name}" (${vimeoId})`);
+              } else {
+                stats.skipped++;
+              }
+            } else {
+              await createVideoItem(fields);
+              stats.created++;
+              console.log(`[cron] Created "${video.name}" (${vimeoId})`);
+            }
+          } catch (err) {
+            stats.errors++;
+            console.error(`[cron] Error syncing video ${vimeoId}:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        const processed = Math.min(page * BATCH_SIZE, total);
+        hasMore = processed < total;
+        page++;
+      } catch (err) {
+        stats.errors++;
+        console.error(`[cron] Error fetching showcase ${showcaseId} page ${page}:`, err instanceof Error ? err.message : String(err));
+        hasMore = false;
+      }
+    }
+
+    results[showcaseId] = stats;
+    console.log(`[cron] Showcase ${showcaseId} done:`, JSON.stringify(stats));
+  }
+
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[cron] Full sync completed in ${duration}s:`, JSON.stringify(results));
+
+  return NextResponse.json({ synced: results, duration: `${duration}s` });
 }
