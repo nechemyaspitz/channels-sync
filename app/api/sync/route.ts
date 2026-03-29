@@ -10,10 +10,11 @@ import {
 import {
   fetchAllVideoItems,
   createVideoItem,
+  createVideoItemsBatch,
   updateVideoItem,
   generateSlug,
 } from "@/lib/webflow";
-import { VimeoVideo, WebflowVideoFields, WebflowItem } from "@/lib/types";
+import type { VimeoVideo, WebflowVideoFields, WebflowItem } from "@/lib/types";
 
 export const maxDuration = 300;
 
@@ -214,15 +215,28 @@ export async function GET(request: Request) {
     { created: number; updated: number; skipped: number; errors: number }
   > = {};
 
+  // Safety margin: stop processing 30s before the 300s function timeout
+  const DEADLINE = startTime + (maxDuration - 30) * 1000;
+
   for (const showcaseId of showcaseIds) {
     const config = mapping[showcaseId];
     const stats = { created: 0, updated: 0, skipped: 0, errors: 0 };
     let page = 1;
     let hasMore = true;
+    let timedOut = false;
 
     console.log(`[cron] Syncing showcase ${showcaseId} ("${config.categoryName}")`);
 
+    // Collect all videos first, then batch-create new ones
+    const toCreate: WebflowVideoFields[] = [];
+
     while (hasMore) {
+      if (Date.now() > DEADLINE) {
+        console.warn(`[cron] Approaching timeout, stopping showcase ${showcaseId}`);
+        timedOut = true;
+        break;
+      }
+
       try {
         const { videos, total } = await fetchShowcaseVideosPage(
           showcaseId,
@@ -253,9 +267,7 @@ export async function GET(request: Request) {
                 stats.skipped++;
               }
             } else {
-              await createVideoItem(fields);
-              stats.created++;
-              console.log(`[cron] Created "${video.name}" (${vimeoId})`);
+              toCreate.push(fields);
             }
           } catch (err) {
             stats.errors++;
@@ -273,8 +285,36 @@ export async function GET(request: Request) {
       }
     }
 
+    // Batch-create all new items (up to 25 per API call instead of 1-by-1)
+    if (toCreate.length > 0 && !timedOut) {
+      console.log(`[cron] Batch creating ${toCreate.length} new items for showcase ${showcaseId}`);
+      try {
+        const created = await createVideoItemsBatch(toCreate);
+        stats.created += created.length;
+        console.log(`[cron] Batch created ${created.length} items`);
+      } catch (err) {
+        // Fallback: try creating one-by-one so partial progress is saved
+        console.error(`[cron] Batch create failed, falling back to individual creates:`, err instanceof Error ? err.message : String(err));
+        for (const fields of toCreate) {
+          if (Date.now() > DEADLINE) {
+            console.warn(`[cron] Approaching timeout during fallback creates`);
+            break;
+          }
+          try {
+            await createVideoItem(fields);
+            stats.created++;
+          } catch (innerErr) {
+            stats.errors++;
+            console.error(`[cron] Error creating "${fields.name}":`, innerErr instanceof Error ? innerErr.message : String(innerErr));
+          }
+        }
+      }
+    }
+
     results[showcaseId] = stats;
     console.log(`[cron] Showcase ${showcaseId} done:`, JSON.stringify(stats));
+
+    if (timedOut) break;
   }
 
   const duration = ((Date.now() - startTime) / 1000).toFixed(1);

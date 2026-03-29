@@ -91,7 +91,13 @@ export function SyncPanel({ password }: { password: string }) {
           break;
         }
 
-        const data = await res.json();
+        let data;
+        try {
+          data = await res.json();
+        } catch {
+          setError("Invalid response from server — the sync may have timed out. Try syncing again.");
+          break;
+        }
 
         totalCreated += data.created;
         totalUpdated += data.updated;
@@ -124,9 +130,81 @@ export function SyncPanel({ password }: { password: string }) {
 
   const syncAll = async () => {
     const ids = Object.keys(mapping);
+    setLogEntries([]);
+    setTotals(null);
+    setError("");
+
+    let allCreated = 0;
+    let allUpdated = 0;
+    let allSkipped = 0;
+    let allErrors = 0;
+
     for (const id of ids) {
-      await syncShowcase(id);
+      setSyncing(id);
+      setStatusMsg(`Syncing ${mapping[id]?.showcaseName || id}...`);
+
+      let page = 1;
+      let totalVideos = 0;
+
+      try {
+        while (true) {
+          setStatusMsg(
+            totalVideos > 0
+              ? `Syncing ${mapping[id]?.showcaseName || id}... (${Math.min((page - 1) * 10, totalVideos)}/${totalVideos})`
+              : `Syncing ${mapping[id]?.showcaseName || id}...`
+          );
+
+          const res = await fetch("/api/sync", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${password}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ showcaseId: id, page }),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            setError(errData.error || `Failed with status ${res.status}`);
+            allErrors++;
+            break;
+          }
+
+          let data;
+          try {
+            data = await res.json();
+          } catch {
+            setError("Invalid response from server — the sync may have timed out.");
+            allErrors++;
+            break;
+          }
+
+          allCreated += data.created;
+          allUpdated += data.updated;
+          allSkipped += data.skipped;
+          allErrors += data.errors;
+          totalVideos = data.total;
+
+          setLogEntries((prev) => [...prev, ...data.log]);
+          setTotals({
+            total: allCreated + allUpdated + allSkipped + allErrors,
+            created: allCreated,
+            updated: allUpdated,
+            skipped: allSkipped,
+            errors: allErrors,
+          });
+
+          if (!data.hasMore) break;
+          page = data.nextPage;
+        }
+      } catch (err) {
+        setError(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+        allErrors++;
+      }
     }
+
+    setStatusMsg(`Done! Created: ${allCreated}, Updated: ${allUpdated}, Skipped: ${allSkipped}, Errors: ${allErrors}`);
+    setSyncing(null);
   };
 
   const showcaseIds = Object.keys(mapping);

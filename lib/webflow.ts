@@ -101,7 +101,7 @@ export async function createVideoItem(
   fields: WebflowVideoFields
 ): Promise<WebflowItem> {
   const collectionId = getVideosCollectionId();
-  const { data } = await webflowFetch<{ items: WebflowItem[] }>(
+  const { data } = await webflowFetch<{ items?: WebflowItem[] }>(
     `/collections/${collectionId}/items/live`,
     {
       method: "POST",
@@ -110,7 +110,41 @@ export async function createVideoItem(
       }),
     }
   );
+  if (!data.items?.[0]) {
+    throw new Error("Webflow create returned no items");
+  }
   return data.items[0];
+}
+
+/**
+ * Create multiple video items in a single API call (max 25 per call).
+ * Returns the created items.
+ */
+export async function createVideoItemsBatch(
+  fieldsList: WebflowVideoFields[]
+): Promise<WebflowItem[]> {
+  if (fieldsList.length === 0) return [];
+  const collectionId = getVideosCollectionId();
+  const created: WebflowItem[] = [];
+
+  // Webflow bulk API supports up to 25 items per request
+  for (let i = 0; i < fieldsList.length; i += 25) {
+    const batch = fieldsList.slice(i, i + 25);
+    const { data } = await webflowFetch<{ items?: WebflowItem[] }>(
+      `/collections/${collectionId}/items/live`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          items: batch.map((fields) => ({ fieldData: fields, isDraft: false })),
+        }),
+      }
+    );
+    if (data.items) {
+      created.push(...data.items);
+    }
+  }
+
+  return created;
 }
 
 /**
