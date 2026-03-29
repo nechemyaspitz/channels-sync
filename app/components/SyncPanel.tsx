@@ -10,37 +10,21 @@ interface MappingEntry {
 
 type Mapping = Record<string, MappingEntry>;
 
-interface LogEntry {
-  action: string;
-  vimeoId: string;
-  videoName: string;
-  details: string;
-}
-
-interface SyncTotals {
+interface ShowcaseProgress {
+  status: "pending" | "syncing" | "done" | "error";
+  processed: number;
   total: number;
   created: number;
   updated: number;
   skipped: number;
   errors: number;
+  errorMessage?: string;
 }
-
-const ACTION_COLORS: Record<string, string> = {
-  create: "text-green-400",
-  update: "text-blue-400",
-  delete: "text-red-400",
-  skip: "text-gray-500",
-  error: "text-red-500",
-  publish: "text-purple-400",
-};
 
 export function SyncPanel({ password }: { password: string }) {
   const [mapping, setMapping] = useState<Mapping>({});
-  const [syncing, setSyncing] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState("");
-  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-  const [totals, setTotals] = useState<SyncTotals | null>(null);
-  const [error, setError] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [progress, setProgress] = useState<Record<string, ShowcaseProgress>>({});
 
   const loadMapping = useCallback(async () => {
     try {
@@ -55,27 +39,32 @@ export function SyncPanel({ password }: { password: string }) {
     loadMapping();
   }, [loadMapping]);
 
+  const updateShowcaseProgress = (id: string, update: Partial<ShowcaseProgress>) => {
+    setProgress((prev) => ({
+      ...prev,
+      [id]: { ...prev[id], ...update },
+    }));
+  };
+
   const syncShowcase = async (showcaseId: string) => {
-    setSyncing(showcaseId);
-    setLogEntries([]);
-    setTotals(null);
-    setError("");
+    updateShowcaseProgress(showcaseId, {
+      status: "syncing",
+      processed: 0,
+      total: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      errors: 0,
+    });
 
     let page = 1;
-    let totalCreated = 0;
-    let totalUpdated = 0;
-    let totalSkipped = 0;
-    let totalErrors = 0;
-    let totalVideos = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let errors = 0;
 
     try {
       while (true) {
-        setStatusMsg(
-          totalVideos > 0
-            ? `Syncing batch... (${Math.min((page - 1) * 10, totalVideos)}/${totalVideos})`
-            : "Starting sync..."
-        );
-
         const res = await fetch("/api/sync", {
           method: "POST",
           headers: {
@@ -87,133 +76,93 @@ export function SyncPanel({ password }: { password: string }) {
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          setError(data.error || `Failed with status ${res.status}`);
-          break;
+          updateShowcaseProgress(showcaseId, {
+            status: "error",
+            errorMessage: data.error || `Failed with status ${res.status}`,
+          });
+          return;
         }
 
         let data;
         try {
           data = await res.json();
         } catch {
-          setError("Invalid response from server — the sync may have timed out. Try syncing again.");
-          break;
+          updateShowcaseProgress(showcaseId, {
+            status: "error",
+            errorMessage: "Response timed out. Try again.",
+          });
+          return;
         }
 
-        totalCreated += data.created;
-        totalUpdated += data.updated;
-        totalSkipped += data.skipped;
-        totalErrors += data.errors;
-        totalVideos = data.total;
+        created += data.created;
+        updated += data.updated;
+        skipped += data.skipped;
+        errors += data.errors;
 
-        setLogEntries((prev) => [...prev, ...data.log]);
-        setTotals({
-          total: totalCreated + totalUpdated + totalSkipped + totalErrors,
-          created: totalCreated,
-          updated: totalUpdated,
-          skipped: totalSkipped,
-          errors: totalErrors,
+        updateShowcaseProgress(showcaseId, {
+          status: data.hasMore ? "syncing" : "done",
+          processed: data.processed,
+          total: data.total,
+          created,
+          updated,
+          skipped,
+          errors,
         });
 
-        if (!data.hasMore) {
-          setStatusMsg(`Done! ${data.processed}/${data.total} videos processed.`);
-          break;
-        }
-
+        if (!data.hasMore) break;
         page = data.nextPage;
       }
     } catch (err) {
-      setError(`Network error: ${err}`);
+      updateShowcaseProgress(showcaseId, {
+        status: "error",
+        errorMessage: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
+  };
 
-    setSyncing(null);
+  const syncOne = async (id: string) => {
+    setSyncing(true);
+    setProgress({});
+    await syncShowcase(id);
+    setSyncing(false);
   };
 
   const syncAll = async () => {
     const ids = Object.keys(mapping);
-    setLogEntries([]);
-    setTotals(null);
-    setError("");
+    setSyncing(true);
 
-    let allCreated = 0;
-    let allUpdated = 0;
-    let allSkipped = 0;
-    let allErrors = 0;
+    // Initialize all as pending
+    const initial: Record<string, ShowcaseProgress> = {};
+    for (const id of ids) {
+      initial[id] = { status: "pending", processed: 0, total: 0, created: 0, updated: 0, skipped: 0, errors: 0 };
+    }
+    setProgress(initial);
 
     for (const id of ids) {
-      setSyncing(id);
-      setStatusMsg(`Syncing ${mapping[id]?.showcaseName || id}...`);
-
-      let page = 1;
-      let totalVideos = 0;
-
-      try {
-        while (true) {
-          setStatusMsg(
-            totalVideos > 0
-              ? `Syncing ${mapping[id]?.showcaseName || id}... (${Math.min((page - 1) * 10, totalVideos)}/${totalVideos})`
-              : `Syncing ${mapping[id]?.showcaseName || id}...`
-          );
-
-          const res = await fetch("/api/sync", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${password}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ showcaseId: id, page }),
-          });
-
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            setError(errData.error || `Failed with status ${res.status}`);
-            allErrors++;
-            break;
-          }
-
-          let data;
-          try {
-            data = await res.json();
-          } catch {
-            setError("Invalid response from server — the sync may have timed out.");
-            allErrors++;
-            break;
-          }
-
-          allCreated += data.created;
-          allUpdated += data.updated;
-          allSkipped += data.skipped;
-          allErrors += data.errors;
-          totalVideos = data.total;
-
-          setLogEntries((prev) => [...prev, ...data.log]);
-          setTotals({
-            total: allCreated + allUpdated + allSkipped + allErrors,
-            created: allCreated,
-            updated: allUpdated,
-            skipped: allSkipped,
-            errors: allErrors,
-          });
-
-          if (!data.hasMore) break;
-          page = data.nextPage;
-        }
-      } catch (err) {
-        setError(`Network error: ${err instanceof Error ? err.message : String(err)}`);
-        allErrors++;
-      }
+      await syncShowcase(id);
     }
-
-    setStatusMsg(`Done! Created: ${allCreated}, Updated: ${allUpdated}, Skipped: ${allSkipped}, Errors: ${allErrors}`);
-    setSyncing(null);
+    setSyncing(false);
   };
 
   const showcaseIds = Object.keys(mapping);
+  const hasProgress = Object.keys(progress).length > 0;
+
+  // Compute grand totals from all showcases
+  const totals = Object.values(progress).reduce(
+    (acc, p) => ({
+      created: acc.created + p.created,
+      updated: acc.updated + p.updated,
+      skipped: acc.skipped + p.skipped,
+      errors: acc.errors + p.errors,
+    }),
+    { created: 0, updated: 0, skipped: 0, errors: 0 }
+  );
+  const allDone = hasProgress && Object.values(progress).every((p) => p.status === "done" || p.status === "error");
 
   if (showcaseIds.length === 0) {
     return (
       <section className="bg-gray-900 rounded-lg p-6">
-        <h2 className="text-lg font-semibold">Bulk Sync</h2>
-        <p className="text-gray-500 text-sm mt-2">
+        <p className="text-gray-500 text-sm">
           No showcase mappings found. Set the SHOWCASE_MAPPING env var first.
         </p>
       </section>
@@ -221,103 +170,115 @@ export function SyncPanel({ password }: { password: string }) {
   }
 
   return (
-    <section className="bg-gray-900 rounded-lg p-6 space-y-4">
-      <h2 className="text-lg font-semibold">Bulk Sync</h2>
-
-      <div className="space-y-2">
-        {showcaseIds.map((id) => (
-          <div
-            key={id}
-            className="flex items-center justify-between bg-gray-800 p-3 rounded"
+    <div className="space-y-4">
+      {/* Showcase list with sync buttons */}
+      <section className="bg-gray-900 rounded-lg p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Showcases</h2>
+          <button
+            onClick={syncAll}
+            disabled={syncing}
+            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
           >
-            <div>
-              <span className="font-medium">{mapping[id].showcaseName}</span>
-              <span className="text-gray-500 text-sm ml-2">
-                → {mapping[id].categoryName}
-              </span>
-            </div>
-            <button
-              onClick={() => syncShowcase(id)}
-              disabled={syncing !== null}
-              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded text-sm font-medium transition-colors"
-            >
-              {syncing === id ? "Syncing..." : "Sync"}
-            </button>
-          </div>
-        ))}
-      </div>
-
-      <button
-        onClick={syncAll}
-        disabled={syncing !== null}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded font-medium text-sm transition-colors"
-      >
-        {syncing ? "Syncing..." : "Sync All"}
-      </button>
-
-      {statusMsg && (
-        <p className="text-gray-400 text-sm">{statusMsg}</p>
-      )}
-
-      {error && (
-        <div className="bg-red-900/30 border border-red-800 rounded p-3 text-red-300 text-sm">
-          {error}
+            {syncing ? "Syncing..." : "Sync All"}
+          </button>
         </div>
-      )}
 
-      {totals && (
-        <div className="grid grid-cols-5 gap-4 text-center">
-          <div className="bg-gray-800 rounded p-3">
-            <div className="text-2xl font-bold">{totals.total}</div>
-            <div className="text-gray-500 text-xs">Total</div>
-          </div>
-          <div className="bg-gray-800 rounded p-3">
-            <div className="text-2xl font-bold text-green-400">{totals.created}</div>
-            <div className="text-gray-500 text-xs">Created</div>
-          </div>
-          <div className="bg-gray-800 rounded p-3">
-            <div className="text-2xl font-bold text-blue-400">{totals.updated}</div>
-            <div className="text-gray-500 text-xs">Updated</div>
-          </div>
-          <div className="bg-gray-800 rounded p-3">
-            <div className="text-2xl font-bold text-gray-400">{totals.skipped}</div>
-            <div className="text-gray-500 text-xs">Skipped</div>
-          </div>
-          <div className="bg-gray-800 rounded p-3">
-            <div className="text-2xl font-bold text-red-400">{totals.errors}</div>
-            <div className="text-gray-500 text-xs">Errors</div>
-          </div>
-        </div>
-      )}
+        {showcaseIds.map((id) => {
+          const p = progress[id];
+          const isSyncing = p?.status === "syncing";
+          const isDone = p?.status === "done";
+          const isError = p?.status === "error";
+          const pct = p && p.total > 0 ? Math.round((p.processed / p.total) * 100) : 0;
 
-      {logEntries.length > 0 && (
-        <div className="bg-gray-800 rounded overflow-hidden">
-          <div className="px-4 py-2 bg-gray-700/50 text-sm font-medium">
-            Sync Log
-          </div>
-          <div className="max-h-96 overflow-y-auto">
-            {logEntries.map((entry, i) => (
-              <div
-                key={i}
-                className="px-4 py-2 border-t border-gray-700/50 text-sm flex items-start gap-3"
-              >
-                <span
-                  className={`font-mono uppercase text-xs w-16 shrink-0 pt-0.5 ${ACTION_COLORS[entry.action] || "text-gray-400"}`}
-                >
-                  {entry.action}
-                </span>
-                <span className="flex-1">
-                  {entry.videoName && (
-                    <span className="font-medium">{entry.videoName}</span>
+          return (
+            <div key={id} className="bg-gray-800 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between p-3">
+                <div className="flex items-center gap-2">
+                  {/* Status indicator */}
+                  {isSyncing && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />}
+                  {isDone && <span className="w-2 h-2 rounded-full bg-green-400" />}
+                  {isError && <span className="w-2 h-2 rounded-full bg-red-400" />}
+                  {!p && <span className="w-2 h-2 rounded-full bg-gray-600" />}
+                  {p?.status === "pending" && <span className="w-2 h-2 rounded-full bg-gray-500" />}
+
+                  <span className="font-medium text-sm">{mapping[id].showcaseName}</span>
+                  <span className="text-gray-500 text-xs">→ {mapping[id].categoryName}</span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {/* Inline stats when syncing or done */}
+                  {p && (p.status === "syncing" || p.status === "done") && (
+                    <div className="flex gap-2 text-xs">
+                      {p.created > 0 && <span className="text-green-400">+{p.created}</span>}
+                      {p.updated > 0 && <span className="text-blue-400">{p.updated} upd</span>}
+                      {p.skipped > 0 && <span className="text-gray-500">{p.skipped} skip</span>}
+                      {p.errors > 0 && <span className="text-red-400">{p.errors} err</span>}
+                    </div>
                   )}
-                  {entry.videoName && " — "}
-                  <span className="text-gray-400">{entry.details}</span>
-                </span>
+
+                  <button
+                    onClick={() => syncOne(id)}
+                    disabled={syncing}
+                    className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-700 disabled:text-gray-500 rounded text-xs font-medium transition-colors"
+                  >
+                    Sync
+                  </button>
+                </div>
               </div>
-            ))}
+
+              {/* Progress bar */}
+              {isSyncing && (
+                <div className="h-1 bg-gray-700">
+                  <div
+                    className="h-full bg-blue-500 transition-all duration-300"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              )}
+              {isDone && <div className="h-1 bg-green-500" />}
+              {isError && (
+                <>
+                  <div className="h-1 bg-red-500" />
+                  <p className="px-3 py-2 text-red-400 text-xs">{p.errorMessage}</p>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </section>
+
+      {/* Grand totals — shown once syncing starts */}
+      {hasProgress && (
+        <section className="bg-gray-900 rounded-lg p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
+              {allDone ? "Results" : "Progress"}
+            </h2>
+            {!allDone && (
+              <span className="text-xs text-gray-500 animate-pulse">Syncing...</span>
+            )}
           </div>
-        </div>
+          <div className="grid grid-cols-4 gap-3 text-center">
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="text-xl font-bold text-green-400">{totals.created}</div>
+              <div className="text-gray-500 text-xs mt-0.5">Created</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="text-xl font-bold text-blue-400">{totals.updated}</div>
+              <div className="text-gray-500 text-xs mt-0.5">Updated</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="text-xl font-bold text-gray-400">{totals.skipped}</div>
+              <div className="text-gray-500 text-xs mt-0.5">Skipped</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="text-xl font-bold text-red-400">{totals.errors}</div>
+              <div className="text-gray-500 text-xs mt-0.5">Errors</div>
+            </div>
+          </div>
+        </section>
       )}
-    </section>
+    </div>
   );
 }

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { LoginGate } from "./components/LoginGate";
-import { MappingEditor } from "./components/MappingEditor";
 import { SyncPanel } from "./components/SyncPanel";
 
 export default function Home() {
@@ -14,7 +13,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8">
-      <div className="max-w-5xl mx-auto space-y-8">
+      <div className="max-w-3xl mx-auto space-y-6">
         <header>
           <h1 className="text-2xl font-bold">Channels Sync</h1>
           <p className="text-gray-400 mt-1">
@@ -22,7 +21,6 @@ export default function Home() {
           </p>
         </header>
 
-        <MappingEditor password={password} />
         <SyncPanel password={password} />
       </div>
     </main>
