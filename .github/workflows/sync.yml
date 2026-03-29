@@ -2,8 +2,8 @@ name: Daily Sync
 
 on:
   schedule:
-    # TEST: run at 22:28 UTC (6:28 PM EDT) — reset to "0 0,12 * * *" after verifying
-    - cron: "28 22 * * *"
+    # Twice daily: noon and midnight UTC
+    - cron: "0 0,12 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:
