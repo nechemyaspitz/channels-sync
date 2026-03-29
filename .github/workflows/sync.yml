@@ -1,0 +1,98 @@
+name: Daily Sync
+
+on:
+  schedule:
+    # TEST: run at 22:28 UTC (6:28 PM EDT) — reset to "0 0,12 * * *" after verifying
+    - cron: "28 22 * * *"
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch showcase list
+        id: showcases
+        run: |
+          RESPONSE=$(curl -sf \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/sync/showcases")
+          echo "data=$RESPONSE" >> "$GITHUB_OUTPUT"
+
+      - name: Sync all showcases
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          SHOWCASES_JSON: ${{ steps.showcases.outputs.data }}
+        run: |
+          SHOWCASE_IDS=$(echo "$SHOWCASES_JSON" | jq -r '.showcases[].id')
+
+          TOTAL_CREATED=0
+          TOTAL_UPDATED=0
+          TOTAL_SKIPPED=0
+          TOTAL_ERRORS=0
+
+          for SHOWCASE_ID in $SHOWCASE_IDS; do
+            SHOWCASE_NAME=$(echo "$SHOWCASES_JSON" | jq -r --arg id "$SHOWCASE_ID" '.showcases[] | select(.id == $id) | .categoryName')
+            echo "::group::Syncing showcase $SHOWCASE_ID ($SHOWCASE_NAME)"
+
+            PAGE=1
+            HAS_MORE=true
+
+            while [ "$HAS_MORE" = "true" ]; do
+              echo "  Page $PAGE..."
+              RESULT=$(curl -sf \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $ADMIN_PASSWORD" \
+                -d "{\"showcaseId\": \"$SHOWCASE_ID\", \"page\": $PAGE}" \
+                "$APP_URL/api/sync")
+
+              if [ $? -ne 0 ]; then
+                echo "  ERROR: Request failed on page $PAGE"
+                TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+                break
+              fi
+
+              CREATED=$(echo "$RESULT" | jq -r '.created // 0')
+              UPDATED=$(echo "$RESULT" | jq -r '.updated // 0')
+              SKIPPED=$(echo "$RESULT" | jq -r '.skipped // 0')
+              ERRORS=$(echo "$RESULT" | jq -r '.errors // 0')
+              HAS_MORE=$(echo "$RESULT" | jq -r '.hasMore // false')
+              NEXT_PAGE=$(echo "$RESULT" | jq -r '.nextPage // "null"')
+
+              TOTAL_CREATED=$((TOTAL_CREATED + CREATED))
+              TOTAL_UPDATED=$((TOTAL_UPDATED + UPDATED))
+              TOTAL_SKIPPED=$((TOTAL_SKIPPED + SKIPPED))
+              TOTAL_ERRORS=$((TOTAL_ERRORS + ERRORS))
+
+              echo "  Created: $CREATED, Updated: $UPDATED, Skipped: $SKIPPED, Errors: $ERRORS"
+
+              if [ "$HAS_MORE" = "true" ] && [ "$NEXT_PAGE" != "null" ]; then
+                PAGE=$NEXT_PAGE
+              else
+                HAS_MORE=false
+              fi
+            done
+
+            echo "::endgroup::"
+          done
+
+          echo ""
+          echo "=== Sync Complete ==="
+          echo "Created: $TOTAL_CREATED"
+          echo "Updated: $TOTAL_UPDATED"
+          echo "Skipped: $TOTAL_SKIPPED"
+          echo "Errors:  $TOTAL_ERRORS"
+
+          if [ "$TOTAL_ERRORS" -gt 0 ]; then
+            echo "::warning::Sync completed with $TOTAL_ERRORS error(s)"
+          fi
+
+          # Write a summary to the GitHub Actions job summary
+          echo "## Sync Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Count |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Created | $TOTAL_CREATED |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Updated | $TOTAL_UPDATED |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Skipped | $TOTAL_SKIPPED |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Errors | $TOTAL_ERRORS |" >> "$GITHUB_STEP_SUMMARY"
